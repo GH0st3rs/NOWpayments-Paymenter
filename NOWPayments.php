@@ -17,6 +17,7 @@ class NOWPayments extends Gateway
         require __DIR__ . '/routes.php';
         // Register webhook route
     }
+
     public function getMetadata()
     {
         return [
@@ -26,6 +27,13 @@ class NOWPayments extends Gateway
             'website'      => 'https://github.com/GH0st3rs/NOWpayments-paymenter.git',
         ];
     }
+
+    /**
+     * Get all the configuration for the extension
+     * 
+     * @param array $values
+     * @return array
+     */
     public function getConfig($values = [])
     {
         return [
@@ -36,6 +44,13 @@ class NOWPayments extends Gateway
                 'required' => true,
             ],
             [
+                'name'        => 'ipn_secret',
+                'label'       => 'IPN Secret Key',
+                'type'        => 'text',
+                'description' => 'IPN (Instant payment notifications, or callbacks) are used to notify you when transaction status is changed.',
+                'required'    => true,
+            ],
+            [
                 'name'        => 'is_fee_paid_by_user',
                 'label'       => 'Fees paid by users',
                 'type'        => 'checkbox',
@@ -44,6 +59,14 @@ class NOWPayments extends Gateway
             ],
         ];
     }
+    
+    /**
+     * Return a view or a url to redirect to
+     * 
+     * @param Invoice $invoice
+     * @param float $total
+     * @return string
+     */
     public function pay(Invoice $invoice, $total)
     {
         $cacheKey = "nowpayments_payment_url_{$invoice->id}";
@@ -79,10 +102,47 @@ class NOWPayments extends Gateway
                 return $paymentUrl;
             }
         }
-        Log::error('NOWPayments Payment Error', ['response' => $response->body()]);
+        Log::error('NOWPayments - Payment Error', ['response' => $response->body()]);
     }
 
     public function webhook(Request $request)
     {
+        $sigString = $request->header('x-nowpayments-sig');
+        if (!$sigString) {
+            Log::error('NOWPayments - HMAC signature missing', ['request' => (string)$request->headers]);
+            return response()->json(['success' => false, 'message' => 'Missing sign'], 400);
+        }
+        $body = $request->json()->all();
+        Log::debug('NOWPayments - Wehbook json', ['request' => $body]);
+        // Check signature
+        $this->tksort($body);
+        $sorted_request_json = json_encode($body, JSON_UNESCAPED_SLASHES);
+        $hmac = hash_hmac("sha512", $sorted_request_json, trim($this->config('ipn_secret')));
+        if ($hmac !== $sigString) {
+            Log::error('NOWPayments - HMAC signature does not match', ['Calculated' => $hmac, 'Received' => $sigString]);
+            return response()->json(['success' => false, 'message' => 'HMAC signature does not match'], 400);
+        }
+        // Check payment status        
+        if ($body['payment_status'] == 'finished') {
+            $actually_paid = $body["actually_paid"] ?? 0;
+            $amount = $body["price_amount"] ?? 0;
+            $fee = $actually_paid - $body["pay_amount"];
+            $transactionHash = $body['payin_hash'] ?? null;
+            // Add payment
+            ExtensionHelper::addPayment($body['order_id'], 'NOWPayments',  $amount, $fee, $transactionHash);
+            return response()->json(['status' => 'success']);
+        } else if ($body['payment_status'] == 'confirmed') {
+            // TODO: We can start to prepare VPN config 
+        }
+    }
+
+    private function tksort(&$array)
+    {
+        ksort($array);
+        foreach (array_keys($array) as $k) {
+            if (gettype($array[$k]) == "array") {
+                $this->tksort($array[$k]);
+            }
+        }
     }
 }
