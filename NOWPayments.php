@@ -59,7 +59,7 @@ class NOWPayments extends Gateway
             ],
         ];
     }
-    
+
     /**
      * Return a view or a url to redirect to
      * 
@@ -77,10 +77,10 @@ class NOWPayments extends Gateway
         $url = 'https://api.nowpayments.io/v1/invoice';
         $apiKey = trim($this->config('api_key'));
         $currency = strtolower($invoice->currency_code);
-        $isFeePaidByUser = $this->config('is_fee_paid_by_user') ?? false;
+        $isFeePaidByUser = $this->config('is_fee_paid_by_user') === "1";
 
         $data = [
-            'price_amount' => number_format($total, 2, '.', ''),
+            'price_amount' => $total,
             'price_currency' => $currency,
             'order_id' => (string) $invoice->id,
             'order_description' => (string)$invoice->items->map(fn($item) => $item->reference->product->name . " x " . $item->reference->quantity),
@@ -124,15 +124,12 @@ class NOWPayments extends Gateway
         }
         // Check payment status        
         if ($body['payment_status'] == 'finished') {
-            $actually_paid = $body["actually_paid"] ?? 0;
             $amount = $body["price_amount"] ?? 0;
-            $fee = $actually_paid - $body["pay_amount"];
-            $transactionHash = $body['payin_hash'] ?? null;
+            $fee = $body['fee']['serviceFee'] + $body['fee']['depositFee'];
+            $transactionHash = $body['payin_hash'] ?? $body['payment_id'] ?? null;
             // Add payment
             ExtensionHelper::addPayment($body['order_id'], 'NOWPayments',  $amount, $fee, $transactionHash);
             return response()->json(['status' => 'success']);
-        } else if ($body['payment_status'] == 'confirmed') {
-            // TODO: We can start to prepare VPN config 
         }
     }
 
