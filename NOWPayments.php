@@ -83,7 +83,7 @@ class NOWPayments extends Gateway
             'price_amount' => $total,
             'price_currency' => $currency,
             'order_id' => (string) $invoice->id,
-            'order_description' => (string)$invoice->items->map(fn($item) => $item->reference->product->name . " x " . $item->reference->quantity),
+            'order_description' => $invoice->items->map(fn($item) => $item->reference->product->name . " x " . $item->reference->quantity)->join(', '),
             'ipn_callback_url' => url('/extensions/gateways/nowpayments/webhook'),
             'cancel_url' => route('invoices.show', $invoice),
             'success_url' => route('invoices.show', $invoice),
@@ -113,24 +113,26 @@ class NOWPayments extends Gateway
             return response()->json(['success' => false, 'message' => 'Missing sign'], 400);
         }
         $body = $request->json()->all();
-        Log::debug('NOWPayments - Wehbook json', ['request' => $body]);
+        Log::debug('NOWPayments - Webhook json', ['request' => $body]);
         // Check signature
         $this->tksort($body);
         $sorted_request_json = json_encode($body, JSON_UNESCAPED_SLASHES);
         $hmac = hash_hmac("sha512", $sorted_request_json, trim($this->config('ipn_secret')));
-        if ($hmac !== $sigString) {
+        if (!hash_equals($hmac, $sigString)) {
             Log::error('NOWPayments - HMAC signature does not match', ['Calculated' => $hmac, 'Received' => $sigString]);
             return response()->json(['success' => false, 'message' => 'HMAC signature does not match'], 400);
         }
         // Check payment status        
         if ($body['payment_status'] == 'finished') {
             $amount = $body["price_amount"] ?? 0;
-            $fee = $body['fee']['serviceFee'] + $body['fee']['depositFee'];
+            $fee = ($body['fee']['serviceFee'] ?? 0) + ($body['fee']['depositFee'] ?? 0);
             $transactionHash = $body['payin_hash'] ?? $body['payment_id'] ?? null;
             // Add payment
             ExtensionHelper::addPayment($body['order_id'], 'NOWPayments',  $amount, $fee, $transactionHash);
             return response()->json(['status' => 'success']);
         }
+
+        return response()->json(['status' => 'ignored']);
     }
 
     private function tksort(&$array)
